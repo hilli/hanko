@@ -13,6 +13,7 @@ const config = {
   onBrokenLinks: 'throw',
   onBrokenMarkdownLinks: 'warn',
   favicon: 'img/favicon.ico',
+  scripts: [{ src: 'https://plausible.io/js/plausible.js', defer: true, 'data-domain': 'docs.hanko.io' }],
 
   // GitHub pages deployment config.
   // If you aren't using GitHub pages, you don't need these.
@@ -105,14 +106,6 @@ const config = {
         }
       },
       image: 'img/thumbnail.jpg',
-      announcementBar: {
-        id: 'support_us',
-        content:
-          '⚠️ This documentation is currently a work in progress, stay tuned for more content! ⚠️',
-        backgroundColor: '#83ceff',
-        textColor: '#091E42',
-        isCloseable: true,
-      },
       colorMode: {
         defaultMode: 'dark',
         disableSwitch: true,

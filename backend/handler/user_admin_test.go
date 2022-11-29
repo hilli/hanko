@@ -35,7 +35,7 @@ func TestUserHandlerAdmin_Delete(t *testing.T) {
 	c.SetParamNames("id")
 	c.SetParamValues(userId.String())
 
-	p := test.NewPersister(users, nil, nil, nil, nil, nil)
+	p := test.NewPersister(users, nil, nil, nil, nil, nil, nil)
 	handler := NewUserHandlerAdmin(p)
 
 	if assert.NoError(t, handler.Delete(c)) {
@@ -52,7 +52,7 @@ func TestUserHandlerAdmin_Delete_InvalidUserId(t *testing.T) {
 	c.SetParamNames("id")
 	c.SetParamValues("invalidId")
 
-	p := test.NewPersister(nil, nil, nil, nil, nil, nil)
+	p := test.NewPersister(nil, nil, nil, nil, nil, nil, nil)
 	handler := NewUserHandlerAdmin(p)
 
 	err := handler.Delete(c)
@@ -72,7 +72,7 @@ func TestUserHandlerAdmin_Delete_UnknownUserId(t *testing.T) {
 	c.SetParamNames("id")
 	c.SetParamValues(userId.String())
 
-	p := test.NewPersister(nil, nil, nil, nil, nil, nil)
+	p := test.NewPersister(nil, nil, nil, nil, nil, nil, nil)
 	handler := NewUserHandlerAdmin(p)
 
 	err := handler.Delete(c)
@@ -104,7 +104,7 @@ func TestUserHandlerAdmin_Patch(t *testing.T) {
 	c.SetParamNames("id")
 	c.SetParamValues(userId.String())
 
-	p := test.NewPersister(users, nil, nil, nil, nil, nil)
+	p := test.NewPersister(users, nil, nil, nil, nil, nil, nil)
 	handler := NewUserHandlerAdmin(p)
 
 	if assert.NoError(t, handler.Patch(c)) {
@@ -124,7 +124,7 @@ func TestUserHandlerAdmin_Patch_InvalidUserIdAndEmail(t *testing.T) {
 	c.SetParamNames("id")
 	c.SetParamValues("invalidUserId")
 
-	p := test.NewPersister(nil, nil, nil, nil, nil, nil)
+	p := test.NewPersister(nil, nil, nil, nil, nil, nil, nil)
 	handler := NewUserHandlerAdmin(p)
 
 	err := handler.Patch(c)
@@ -167,7 +167,7 @@ func TestUserHandlerAdmin_Patch_EmailNotAvailable(t *testing.T) {
 	c.SetParamNames("id")
 	c.SetParamValues(users[0].ID.String())
 
-	p := test.NewPersister(users, nil, nil, nil, nil, nil)
+	p := test.NewPersister(users, nil, nil, nil, nil, nil, nil)
 	handler := NewUserHandlerAdmin(p)
 
 	err := handler.Patch(c)
@@ -200,7 +200,7 @@ func TestUserHandlerAdmin_Patch_UnknownUserId(t *testing.T) {
 	unknownUserId, _ := uuid.NewV4()
 	c.SetParamValues(unknownUserId.String())
 
-	p := test.NewPersister(users, nil, nil, nil, nil, nil)
+	p := test.NewPersister(users, nil, nil, nil, nil, nil, nil)
 	handler := NewUserHandlerAdmin(p)
 
 	err := handler.Patch(c)
@@ -233,7 +233,7 @@ func TestUserHandlerAdmin_Patch_InvalidJson(t *testing.T) {
 	unknownUserId, _ := uuid.NewV4()
 	c.SetParamValues(unknownUserId.String())
 
-	p := test.NewPersister(users, nil, nil, nil, nil, nil)
+	p := test.NewPersister(users, nil, nil, nil, nil, nil, nil)
 	handler := NewUserHandlerAdmin(p)
 
 	err := handler.Patch(c)
@@ -271,7 +271,7 @@ func TestUserHandlerAdmin_List(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 
-	p := test.NewPersister(users, nil, nil, nil, nil, nil)
+	p := test.NewPersister(users, nil, nil, nil, nil, nil, nil)
 	handler := NewUserHandlerAdmin(p)
 
 	if assert.NoError(t, handler.List(c)) {
@@ -280,6 +280,8 @@ func TestUserHandlerAdmin_List(t *testing.T) {
 		err := json.Unmarshal(rec.Body.Bytes(), &users)
 		assert.NoError(t, err)
 		assert.Equal(t, 2, len(users))
+		assert.Equal(t, "2", rec.Header().Get("X-Total-Count"))
+		assert.Equal(t, "<http://example.com/users?page=1&per_page=20>; rel=\"first\"", rec.Header().Get("Link"))
 	}
 }
 
@@ -314,7 +316,7 @@ func TestUserHandlerAdmin_List_Pagination(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 
-	p := test.NewPersister(users, nil, nil, nil, nil, nil)
+	p := test.NewPersister(users, nil, nil, nil, nil, nil, nil)
 	handler := NewUserHandlerAdmin(p)
 
 	if assert.NoError(t, handler.List(c)) {
@@ -323,6 +325,8 @@ func TestUserHandlerAdmin_List_Pagination(t *testing.T) {
 		err := json.Unmarshal(rec.Body.Bytes(), &got)
 		assert.NoError(t, err)
 		assert.Equal(t, 1, len(got))
+		assert.Equal(t, "2", rec.Header().Get("X-Total-Count"))
+		assert.Equal(t, "<http://example.com/users?page=1&per_page=1>; rel=\"first\",<http://example.com/users?page=1&per_page=1>; rel=\"prev\"", rec.Header().Get("Link"))
 	}
 }
 
@@ -336,7 +340,7 @@ func TestUserHandlerAdmin_List_NoUsers(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 
-	p := test.NewPersister(nil, nil, nil, nil, nil, nil)
+	p := test.NewPersister(nil, nil, nil, nil, nil, nil, nil)
 	handler := NewUserHandlerAdmin(p)
 
 	if assert.NoError(t, handler.List(c)) {
@@ -345,6 +349,8 @@ func TestUserHandlerAdmin_List_NoUsers(t *testing.T) {
 		err := json.Unmarshal(rec.Body.Bytes(), &got)
 		assert.NoError(t, err)
 		assert.Equal(t, 0, len(got))
+		assert.Equal(t, "0", rec.Header().Get("X-Total-Count"))
+		assert.Equal(t, "<http://example.com/users?page=1&per_page=1>; rel=\"first\"", rec.Header().Get("Link"))
 	}
 }
 
@@ -357,7 +363,7 @@ func TestUserHandlerAdmin_List_InvalidPaginationParam(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 
-	p := test.NewPersister(nil, nil, nil, nil, nil, nil)
+	p := test.NewPersister(nil, nil, nil, nil, nil, nil, nil)
 	handler := NewUserHandlerAdmin(p)
 
 	err := handler.List(c)

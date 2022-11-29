@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"github.com/gobuffalo/pop/v6"
 	"github.com/gofrs/uuid"
@@ -15,6 +16,7 @@ type UserPersister interface {
 	Update(models.User) error
 	Delete(models.User) error
 	List(page int, perPage int) ([]models.User, error)
+	Count() (int, error)
 }
 
 type userPersister struct {
@@ -28,7 +30,7 @@ func NewUserPersister(db *pop.Connection) UserPersister {
 func (p *userPersister) Get(id uuid.UUID) (*models.User, error) {
 	user := models.User{}
 	err := p.db.Eager().Find(&user, id)
-	if err != nil && err == sql.ErrNoRows {
+	if err != nil && errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
@@ -42,7 +44,7 @@ func (p *userPersister) GetByEmail(email string) (*models.User, error) {
 	user := models.User{}
 	query := p.db.Eager().Where("email = (?)", email)
 	err := query.First(&user)
-	if err != nil && err == sql.ErrNoRows {
+	if err != nil && errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
@@ -91,9 +93,21 @@ func (p *userPersister) List(page int, perPage int) ([]models.User, error) {
 	users := []models.User{}
 
 	err := p.db.Q().Paginate(page, perPage).All(&users)
+	if err != nil && errors.Is(err, sql.ErrNoRows) {
+		return users, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch users: %w", err)
 	}
 
 	return users, nil
+}
+
+func (p *userPersister) Count() (int, error) {
+	count, err := p.db.Count(&models.User{})
+	if err != nil {
+		return 0, fmt.Errorf("failed to get user count: %w", err)
+	}
+
+	return count, nil
 }

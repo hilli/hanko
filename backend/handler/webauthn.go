@@ -10,6 +10,7 @@ import (
 	"github.com/gofrs/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/lestrrat-go/jwx/v2/jwt"
+	"github.com/teamhanko/hanko/backend/audit_log"
 	"github.com/teamhanko/hanko/backend/config"
 	"github.com/teamhanko/hanko/backend/dto"
 	"github.com/teamhanko/hanko/backend/dto/intern"
@@ -17,6 +18,7 @@ import (
 	"github.com/teamhanko/hanko/backend/persistence/models"
 	"github.com/teamhanko/hanko/backend/session"
 	"net/http"
+	"strings"
 )
 
 type WebauthnHandler struct {
@@ -24,10 +26,11 @@ type WebauthnHandler struct {
 	webauthn       *webauthn.WebAuthn
 	sessionManager session.Manager
 	cfg            *config.Config
+	auditLogger    auditlog.Logger
 }
 
 // NewWebauthnHandler creates a new handler which handles all webauthn related routes
-func NewWebauthnHandler(cfg *config.Config, persister persistence.Persister, sessionManager session.Manager) (*WebauthnHandler, error) {
+func NewWebauthnHandler(cfg *config.Config, persister persistence.Persister, sessionManager session.Manager, auditLogger auditlog.Logger) (*WebauthnHandler, error) {
 	f := false
 	wa, err := webauthn.New(&webauthn.Config{
 		RPDisplayName:         cfg.Webauthn.RelyingParty.DisplayName,
@@ -52,6 +55,7 @@ func NewWebauthnHandler(cfg *config.Config, persister persistence.Persister, ses
 		webauthn:       wa,
 		sessionManager: sessionManager,
 		cfg:            cfg,
+		auditLogger:    auditLogger,
 	}, nil
 }
 
@@ -65,11 +69,15 @@ func (h *WebauthnHandler) BeginRegistration(c echo.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to parse userId from JWT subject:%w", err)
 	}
-	webauthnUser, err := h.getWebauthnUser(h.persister.GetConnection(), uId)
+	webauthnUser, user, err := h.getWebauthnUser(h.persister.GetConnection(), uId)
 	if err != nil {
 		return fmt.Errorf("failed to get user: %w", err)
 	}
 	if webauthnUser == nil {
+		err = h.auditLogger.Create(c, models.AuditLogWebAuthnRegistrationInitFailed, nil, fmt.Errorf("unknown user"))
+		if err != nil {
+			return fmt.Errorf("failed to create audit log: %w", err)
+		}
 		return dto.NewHTTPError(http.StatusBadRequest, "user not found").SetInternal(errors.New(fmt.Sprintf("user %s not found ", uId)))
 	}
 
@@ -77,10 +85,9 @@ func (h *WebauthnHandler) BeginRegistration(c echo.Context) error {
 	options, sessionData, err := h.webauthn.BeginRegistration(
 		webauthnUser,
 		webauthn.WithAuthenticatorSelection(protocol.AuthenticatorSelection{
-			AuthenticatorAttachment: protocol.Platform,
-			RequireResidentKey:      &t,
-			ResidentKey:             protocol.ResidentKeyRequirementPreferred,
-			UserVerification:        protocol.VerificationRequired,
+			RequireResidentKey: &t,
+			ResidentKey:        protocol.ResidentKeyRequirementRequired,
+			UserVerification:   protocol.VerificationRequired,
 		}),
 		webauthn.WithConveyancePreference(protocol.PreferNoAttestation),
 		// don't set the excludeCredentials list, so an already registered device can be re-registered
@@ -93,6 +100,11 @@ func (h *WebauthnHandler) BeginRegistration(c echo.Context) error {
 	err = h.persister.GetWebauthnSessionDataPersister().Create(*intern.WebauthnSessionDataToModel(sessionData, models.WebauthnOperationRegistration))
 	if err != nil {
 		return fmt.Errorf("failed to store creation options session data: %w", err)
+	}
+
+	err = h.auditLogger.Create(c, models.AuditLogWebAuthnRegistrationInitSucceeded, user, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create audit log: %w", err)
 	}
 
 	return c.JSON(http.StatusOK, options)
@@ -121,25 +133,55 @@ func (h *WebauthnHandler) FinishRegistration(c echo.Context) error {
 		}
 
 		if sessionData == nil {
+			err = h.auditLogger.Create(c, models.AuditLogWebAuthnRegistrationFinalFailed, nil, fmt.Errorf("received unkown challenge"))
+			if err != nil {
+				return fmt.Errorf("failed to create audit log: %w", err)
+			}
 			return dto.NewHTTPError(http.StatusBadRequest, "Stored challenge and received challenge do not match").SetInternal(errors.New("sessionData not found"))
 		}
 
 		if sessionToken.Subject() != sessionData.UserId.String() {
+			err = h.auditLogger.Create(c, models.AuditLogWebAuthnRegistrationFinalFailed, nil, fmt.Errorf("user session does not match sessionData subject"))
+			if err != nil {
+				return fmt.Errorf("failed to create audit log: %w", err)
+			}
 			return dto.NewHTTPError(http.StatusBadRequest, "Stored challenge and received challenge do not match").SetInternal(errors.New("userId in webauthn.sessionData does not match user session"))
 		}
 
-		webauthnUser, err := h.getWebauthnUser(tx, sessionData.UserId)
+		webauthnUser, user, err := h.getWebauthnUser(tx, sessionData.UserId)
 		if err != nil {
 			return fmt.Errorf("failed to get user: %w", err)
 		}
 
 		if webauthnUser == nil {
+			err = h.auditLogger.Create(c, models.AuditLogWebAuthnRegistrationFinalFailed, nil, fmt.Errorf("unkown user"))
+			if err != nil {
+				return fmt.Errorf("failed to create audit log: %w", err)
+			}
 			return dto.NewHTTPError(http.StatusBadRequest).SetInternal(errors.New("user not found"))
 		}
 
 		credential, err := h.webauthn.CreateCredential(webauthnUser, *intern.WebauthnSessionDataFromModel(sessionData), request)
 		if err != nil {
-			return dto.NewHTTPError(http.StatusBadRequest, "Failed to validate attestation").SetInternal(err)
+			errorMessage := "failed to validate attestation"
+			errorStatus := http.StatusBadRequest
+			// Safari currently (v. 16.2) does not provide a UI in case of a (registration) ceremony
+			// being performed with an authenticator NOT protected by e.g. a PIN. While Chromium based browsers do offer
+			// a UI guiding through the setup of a PIN, Safari simply performs the ceremony without then setting the UV
+			// flag even if it is required. In order to provide an appropriate error message to the frontend/user, we
+			// need to return an error response distinguishable from other error cases. We use a dedicated/separate HTTP
+			// status code because it seemed a bit more robust than forcing the frontend to check on a matching
+			// (sub-)string in the error message in order to properly display the error.
+			if err, ok := err.(*protocol.Error); ok && err.Type == protocol.ErrVerification.Type && strings.Contains(err.DevInfo, "User verification") {
+				errorMessage = fmt.Sprintf("%s: %s: %s", errorMessage, err.Details, err.DevInfo)
+				errorStatus = http.StatusUnprocessableEntity
+			}
+			err = h.auditLogger.Create(c, models.AuditLogWebAuthnRegistrationFinalFailed, user, errors.New(errorMessage))
+			if err != nil {
+				return fmt.Errorf("failed to create audit log: %w", err)
+			}
+
+			return dto.NewHTTPError(errorStatus, errorMessage).SetInternal(err)
 		}
 
 		model := intern.WebauthnCredentialToModel(credential, sessionData.UserId)
@@ -151,6 +193,11 @@ func (h *WebauthnHandler) FinishRegistration(c echo.Context) error {
 		err = sessionDataPersister.Delete(*sessionData)
 		if err != nil {
 			c.Logger().Errorf("failed to delete attestation session data: %w", err)
+		}
+
+		err = h.auditLogger.Create(c, models.AuditLogWebAuthnRegistrationFinalSucceeded, user, nil)
+		if err != nil {
+			return fmt.Errorf("failed to create audit log: %w", err)
 		}
 
 		return c.JSON(http.StatusOK, map[string]string{"credential_id": model.ID, "user_id": webauthnUser.UserId.String()})
@@ -171,17 +218,27 @@ func (h *WebauthnHandler) BeginAuthentication(c echo.Context) error {
 
 	var options *protocol.CredentialAssertion
 	var sessionData *webauthn.SessionData
+	var user *models.User
 	if request.UserID != nil {
 		// non discoverable login initialization
 		userId, err := uuid.FromString(*request.UserID)
 		if err != nil {
+			err = h.auditLogger.Create(c, models.AuditLogWebAuthnAuthenticationInitFailed, nil, fmt.Errorf("user_id is not a uuid"))
+			if err != nil {
+				return fmt.Errorf("failed to create audit log: %w", err)
+			}
 			return dto.NewHTTPError(http.StatusBadRequest, "failed to parse UserID as uuid").SetInternal(err)
 		}
-		webauthnUser, err := h.getWebauthnUser(h.persister.GetConnection(), userId)
+		var webauthnUser *intern.WebauthnUser
+		webauthnUser, user, err = h.getWebauthnUser(h.persister.GetConnection(), userId) // TODO:
 		if err != nil {
 			return dto.NewHTTPError(http.StatusInternalServerError).SetInternal(fmt.Errorf("failed to get user: %w", err))
 		}
 		if webauthnUser == nil {
+			err = h.auditLogger.Create(c, models.AuditLogWebAuthnAuthenticationInitFailed, nil, fmt.Errorf("unkown user"))
+			if err != nil {
+				return fmt.Errorf("failed to create audit log: %w", err)
+			}
 			return dto.NewHTTPError(http.StatusBadRequest, "user not found")
 		}
 
@@ -211,6 +268,11 @@ func (h *WebauthnHandler) BeginAuthentication(c echo.Context) error {
 		options.Response.AllowedCredentials[i].Transport = nil
 	}
 
+	err = h.auditLogger.Create(c, models.AuditLogWebAuthnAuthenticationInitSucceeded, user, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create audit log: %w", err)
+	}
+
 	return c.JSON(http.StatusOK, options)
 }
 
@@ -233,6 +295,10 @@ func (h *WebauthnHandler) FinishAuthentication(c echo.Context) error {
 		}
 
 		if sessionData == nil {
+			err = h.auditLogger.Create(c, models.AuditLogWebAuthnAuthenticationFinalFailed, nil, fmt.Errorf("received unkown challenge"))
+			if err != nil {
+				return fmt.Errorf("failed to create audit log: %w", err)
+			}
 			return dto.NewHTTPError(http.StatusUnauthorized, "Stored challenge and received challenge do not match").SetInternal(errors.New("sessionData not found"))
 		}
 
@@ -240,18 +306,23 @@ func (h *WebauthnHandler) FinishAuthentication(c echo.Context) error {
 
 		var credential *webauthn.Credential
 		var webauthnUser *intern.WebauthnUser
+		var user *models.User
 		if sessionData.UserId.IsNil() {
 			// Discoverable Login
 			userId, err := uuid.FromBytes(request.Response.UserHandle)
 			if err != nil {
 				return dto.NewHTTPError(http.StatusBadRequest, "failed to parse userHandle as uuid").SetInternal(err)
 			}
-			webauthnUser, err = h.getWebauthnUser(tx, userId)
+			webauthnUser, user, err = h.getWebauthnUser(tx, userId)
 			if err != nil {
 				return fmt.Errorf("failed to get user: %w", err)
 			}
 
 			if webauthnUser == nil {
+				err = h.auditLogger.Create(c, models.AuditLogWebAuthnAuthenticationFinalFailed, nil, fmt.Errorf("unkown user"))
+				if err != nil {
+					return fmt.Errorf("failed to create audit log: %w", err)
+				}
 				return dto.NewHTTPError(http.StatusUnauthorized).SetInternal(errors.New("user not found"))
 			}
 
@@ -259,19 +330,31 @@ func (h *WebauthnHandler) FinishAuthentication(c echo.Context) error {
 				return webauthnUser, nil
 			}, *model, request)
 			if err != nil {
+				err = h.auditLogger.Create(c, models.AuditLogWebAuthnAuthenticationFinalFailed, user, fmt.Errorf("assertion validation failed"))
+				if err != nil {
+					return fmt.Errorf("failed to create audit log: %w", err)
+				}
 				return dto.NewHTTPError(http.StatusUnauthorized, "failed to validate assertion").SetInternal(err)
 			}
 		} else {
 			// non discoverable Login
-			webauthnUser, err = h.getWebauthnUser(tx, sessionData.UserId)
+			webauthnUser, user, err = h.getWebauthnUser(tx, sessionData.UserId)
 			if err != nil {
 				return fmt.Errorf("failed to get user: %w", err)
 			}
 			if webauthnUser == nil {
+				err = h.auditLogger.Create(c, models.AuditLogWebAuthnAuthenticationFinalFailed, nil, fmt.Errorf("unkown user"))
+				if err != nil {
+					return fmt.Errorf("failed to create audit log: %w", err)
+				}
 				return dto.NewHTTPError(http.StatusUnauthorized).SetInternal(errors.New("user not found"))
 			}
 			credential, err = h.webauthn.ValidateLogin(webauthnUser, *model, request)
 			if err != nil {
+				err = h.auditLogger.Create(c, models.AuditLogWebAuthnAuthenticationFinalFailed, user, fmt.Errorf("assertion validation failed"))
+				if err != nil {
+					return fmt.Errorf("failed to create audit log: %w", err)
+				}
 				return dto.NewHTTPError(http.StatusUnauthorized, "failed to validate assertion").SetInternal(err)
 			}
 		}
@@ -295,26 +378,33 @@ func (h *WebauthnHandler) FinishAuthentication(c echo.Context) error {
 
 		if h.cfg.Session.EnableAuthTokenHeader {
 			c.Response().Header().Set("X-Auth-Token", token)
+			c.Response().Header().Set("Access-Control-Expose-Headers", "X-Auth-Token")
+
+		}
+
+		err = h.auditLogger.Create(c, models.AuditLogWebAuthnAuthenticationFinalSucceeded, user, nil)
+		if err != nil {
+			return fmt.Errorf("failed to create audit log: %w", err)
 		}
 
 		return c.JSON(http.StatusOK, map[string]string{"credential_id": base64.RawURLEncoding.EncodeToString(credential.ID), "user_id": webauthnUser.UserId.String()})
 	})
 }
 
-func (h WebauthnHandler) getWebauthnUser(connection *pop.Connection, userId uuid.UUID) (*intern.WebauthnUser, error) {
+func (h WebauthnHandler) getWebauthnUser(connection *pop.Connection, userId uuid.UUID) (*intern.WebauthnUser, *models.User, error) {
 	user, err := h.persister.GetUserPersisterWithConnection(connection).Get(userId)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get user: %w", err)
+		return nil, nil, fmt.Errorf("failed to get user: %w", err)
 	}
 
 	if user == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	credentials, err := h.persister.GetWebauthnCredentialPersisterWithConnection(connection).GetFromUser(user.ID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get webauthn credentials: %w", err)
+		return nil, nil, fmt.Errorf("failed to get webauthn credentials: %w", err)
 	}
 
-	return intern.NewWebauthnUser(*user, credentials), nil
+	return intern.NewWebauthnUser(*user, credentials), user, nil
 }

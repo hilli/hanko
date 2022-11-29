@@ -1,5 +1,7 @@
 # Build the hanko binary
-FROM golang:1.17 as builder
+FROM --platform=$BUILDPLATFORM golang:1.19 as builder
+
+ARG TARGETARCH
 
 WORKDIR /workspace
 COPY go.mod go.mod
@@ -7,7 +9,7 @@ COPY go.sum go.sum
 RUN go mod download
 
 # Copy the go source
-COPY ../main.go main.go
+COPY main.go main.go
 COPY cmd cmd/
 COPY config config/
 COPY persistence persistence/
@@ -17,9 +19,11 @@ COPY crypto crypto/
 COPY dto dto/
 COPY session session/
 COPY mail mail/
+COPY audit_log audit_log/
+COPY pagination pagination/
 
 # Build
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o hanko main.go
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -a -o hanko main.go
 
 # Use distroless as minimal base image to package hanko binary
 # See https://github.com/GoogleContainerTools/distroless for details
