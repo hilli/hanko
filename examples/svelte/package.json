@@ -6,17 +6,17 @@
     "start": "vite --port 8888"
   },
   "devDependencies": {
-    "@sveltejs/vite-plugin-svelte": "^1.0.2",
+    "@sveltejs/vite-plugin-svelte": "^1.3.1",
     "@tsconfig/svelte": "^3.0.0",
-    "svelte": "^3.50.1",
-    "svelte-check": "^2.8.1",
+    "svelte": "^3.53.1",
+    "svelte-check": "^2.9.2",
     "svelte-preprocess": "^4.10.7",
-    "tslib": "^2.4.0",
-    "typescript": "^4.6.4",
-    "vite": "^3.1.0"
+    "tslib": "^2.4.1",
+    "typescript": "^4.9.3",
+    "vite": "^3.2.4"
   },
   "dependencies": {
-    "@teamhanko/hanko-elements": "^0.0.8-alpha",
+    "@teamhanko/hanko-elements": "^0.0.13-alpha",
     "svelte-navigator": "^3.2.2"
   }
 }
