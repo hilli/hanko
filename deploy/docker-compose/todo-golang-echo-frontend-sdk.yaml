@@ -1,0 +1,10 @@
+services:
+  todo:
+    build: ../../frontend/examples/golang-echo-frontend-sdk
+    ports:
+      - "8002:8002"
+    environment:
+      - HANKO_API_URL=http://hanko:8000
+      - HANKO_FRONTEND_SDK_URL=http://localhost:9500/sdk.umd.js
+    networks:
+      - intranet

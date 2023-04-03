@@ -4,6 +4,7 @@ This directory contains examples that show
 
 - integration of web component(s) provided through the`@teamhanko/hanko-elements` package (see [elements](../frontend/elements)).
 - how to validate JSON Web Tokens (JWT) issued by the Hanko [API](../backend) in a custom backend
+- how to use the Hanko [API](../backend) in a custom golang backend using the [frontend SDK](../frontend/sdk)
 
 It contains:
 
@@ -14,6 +15,8 @@ It contains:
   - [React](react)
   - [Vue](vue)
   - [Svelte](svelte)
+- example frontend applications using the Hanko frontend SDK:
+  - [Go using the frontend SDK](golang-echo-frontend-sdk)
 
 ## How to run
 ### Manual
@@ -42,4 +45,10 @@ docker compose -f deploy/docker-compose/base.yaml -f deploy/docker-compose/todo-
 #### Svelte
 ```
 docker compose -f deploy/docker-compose/base.yaml -f deploy/docker-compose/todo-svelte.yaml -p "hanko-todo-svelte" up --build
+```
+
+#### Go using the frontend SDK
+
+```
+docker compose -f deploy/docker-compose/base.yaml -f deploy/docker-compose/todo-golang-echo-frontend-sdk.yaml -p "hanko-todo-golang-echo-frontend-sdk" up --build
 ```
